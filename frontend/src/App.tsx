@@ -175,14 +175,13 @@ function App() {
 
       {/* Footer */}
       <footer className="relative z-10 text-center py-4">
-        <p className="text-sm text-gray-500 dark:text-gray-400 animate-in fade-in duration-1000 delay-2000">
-          • For universal media downloading 
+        <div className="text-sm text-gray-500 dark:text-gray-400 animate-in fade-in duration-1000 delay-2000">
+          <p>• For universal media downloading</p>
           <p>• Supports Instagram, Spotify, YouTube & X/Twitter</p>
-           <p> Built with ❤️by</p>
-        </p>
-       
-        <p> © EIEO-GH</p>
+          <p>Built with ❤️ by EIEO-GH</p>
+        </div>
 
+        <p className="mt-2 text-xs text-gray-400">© EIEO-GH</p>
       </footer>
     </div>
   );

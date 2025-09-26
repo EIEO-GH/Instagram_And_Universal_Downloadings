@@ -485,30 +485,81 @@ def download_spotify(url: str, target_dir: str, enforce_mp3: bool = True) -> str
         # title from oEmbed is usually like "Track Name - Artist"
         query = title or url
 
-        # Use yt-dlp to search YouTube and download best audio
-        search_query = f"ytsearch1:{query}"
-        ydl_opts = {
+        # Use yt-dlp to search YouTube and try multiple candidates/strategies.
+        # Search multiple candidates (ytsearch5) and try audio-only and video+audio downloads for each.
+        search_query = f"ytsearch5:{query}"
+        search_opts = {
             'outtmpl': os.path.join(target_dir, '%(title)s.%(ext)s'),
-            'format': 'bestaudio/best',
             'quiet': True,
             'noplaylist': True,
+            'ignoreerrors': True,
+            'default_search': 'ytsearch',
+            'no_warnings': True,
+            'socket_timeout': 10,
         }
-        if enforce_mp3:
-            ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}]
+        try:
+            with yt_dlp.YoutubeDL(search_opts) as ydl:
+                logger.info('Searching YouTube for query: %s', query)
+                info = ydl.extract_info(search_query, download=False)
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(search_query, download=True)
-            # After download, scan target_dir for common audio extensions
-            audio_files = [f for f in os.listdir(target_dir) if f.lower().endswith(('.mp3', '.m4a', '.webm', '.flac'))]
-            if audio_files:
-                audio_files_full = [os.path.join(target_dir, f) for f in audio_files]
-                # pick the largest file (most likely correct)
-                audio_files_full.sort(key=lambda p: os.path.getsize(p), reverse=True)
-                chosen = audio_files_full[0]
-                logger.info('Fallback download succeeded, found %s', chosen)
-                return chosen
-            else:
-                logger.warning('Fallback yt-dlp did not produce any audio files in %s', target_dir)
+            entries = info.get('entries') if info and isinstance(info, dict) else None
+            if not entries:
+                # If single result returned as a video info
+                entries = [info] if info else []
+
+            # Limit how many candidates we try
+            candidates = entries[:5]
+            logger.info('Found %s candidate(s) for query', len(candidates))
+
+            last_exc = None
+            for idx, entry in enumerate(candidates):
+                if not entry:
+                    continue
+                video_url = entry.get('webpage_url') or entry.get('url')
+                if not video_url and 'id' in entry:
+                    video_url = f"https://www.youtube.com/watch?v={entry['id']}"
+                if not video_url:
+                    continue
+
+                # Try audio-only first, then video+audio extraction
+                candidate_formats = [
+                    'bestaudio/best',
+                    'bestvideo+bestaudio/best',
+                ]
+
+                for fmt in candidate_formats:
+                    opts = dict(search_opts)
+                    opts['format'] = fmt
+                    # if video+audio, set merge format
+                    if 'bestvideo' in fmt:
+                        opts['merge_output_format'] = 'mp4'
+                    if enforce_mp3:
+                        opts.setdefault('postprocessors', []).append({'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'})
+                    opts['http_headers'] = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+
+                    try:
+                        logger.info('Attempting candidate %s (video %s) with format %s', idx + 1, video_url, fmt)
+                        with yt_dlp.YoutubeDL(opts) as ydl2:
+                            ydl2.extract_info(video_url, download=True)
+
+                        # After download, scan target_dir for audio files
+                        audio_files = [f for f in os.listdir(target_dir) if f.lower().endswith(('.mp3', '.m4a', '.webm', '.flac', '.mp4'))]
+                        if audio_files:
+                            audio_files_full = [os.path.join(target_dir, f) for f in audio_files]
+                            audio_files_full.sort(key=lambda p: os.path.getsize(p), reverse=True)
+                            chosen = audio_files_full[0]
+                            logger.info('Fallback download succeeded (candidate %s): %s', idx + 1, chosen)
+                            return chosen
+                        else:
+                            logger.warning('Candidate %s with format %s produced no files', idx + 1, fmt)
+                    except Exception as e:
+                        last_exc = e
+                        logger.exception('Candidate %s failed with format %s', idx + 1, fmt)
+
+            if last_exc:
+                logger.error('All candidate attempts failed for query %s: %s', query, last_exc)
+        except Exception as e:
+            logger.exception('Search/extract phase failed for Spotify fallback: %s', e)
     except Exception as fb_err:
         logger.exception('Spotify fallback failed: %s', fb_err)
 
